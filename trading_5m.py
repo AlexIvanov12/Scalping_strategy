@@ -102,7 +102,7 @@ def plot_signals(data):
 
 # Example usage:
 # Assume data is loaded into a DataFrame named 'data' with columns ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-data = pd.read_csv('C:\Program VC\scalping_strategy\APPLE_data5M.csv')
-data['Date'] = pd.to_datetime(data['Date'])
-data.set_index('Date', inplace=True)
-trading_strategy(data)
+# data = pd.read_csv('path_to_your_minute5_data.csv')
+# data['Date'] = pd.to_datetime(data['Date'])
+# data.set_index('Date', inplace=True)
+# trading_strategy(data)

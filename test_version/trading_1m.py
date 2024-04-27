@@ -37,13 +37,16 @@ def compute_indicators(df):
 
 def signal_generation(df, conn):
     cursor = conn.cursor()
-    buy_signals = [np.nan] * len(df)  # Initialize full length with np.nan
-    sell_signals = [np.nan] * len(df) # Initialize full length with np.nan
+    buy_signals = [np.nan] * len(df)
+    sell_signals = [np.nan] * len(df)
     transaction_data = []
 
+    take_profit_threshold = 3
+    stop_loss_threshold = -0.15
+
     for i in range(1, len(df)):
-        # Check for buy signal
-        if df['MACD'].iloc[i] > df['Signal'].iloc[i] and df['MACD'].iloc[i-1] <= df['Signal'].iloc[i-1] and df['RSI'].iloc[i] > 30:
+        # Buy condition
+        if df['MACD'].iloc[i] > df['Signal'].iloc[i] and df['MACD'].iloc[i-1] <= df['Signal'].iloc[i-1] and df['RSI'].iloc[i] > 40:
             buy_signals[i] = df['Close'].iloc[i]
             entry = {
                 'time_entry': df.index[i].strftime('%Y-%m-%d %H:%M:%S'),
@@ -51,49 +54,61 @@ def signal_generation(df, conn):
                 'macd_entry': df['MACD'].iloc[i],
                 'signal_entry': df['Signal'].iloc[i],
                 'rsi_entry': df['RSI'].iloc[i],
-                'volume_entry': df['Volume'].iloc[i]
+                'volume_entry': df['Volume'].iloc[i],
+                'take_profit_price': df['Close'].iloc[i] + take_profit_threshold,
+                'stop_loss_price': df['Close'].iloc[i] + stop_loss_threshold
             }
             transaction_data.append(entry)
 
-        # Check for sell signal and process transaction
-        if transaction_data and (df['Close'].iloc[i] > transaction_data[-1]['price_entry'] * 1.0010 or df['Close'].iloc[i] < transaction_data[-1]['price_entry'] * 0.9990):
-            sell_signals[i] = df['Close'].iloc[i]
-            exit_data = transaction_data.pop()
-            exit_data['profit_loss'] = df['Close'].iloc[i] - exit_data['price_entry']
-            is_profitable = exit_data['profit_loss'] > 0
-            exit_data.update({
-                'time_exit': df.index[i].strftime('%Y-%m-%d %H:%M:%S'),
-                'price_exit': df['Close'].iloc[i],
-                'macd_exit': df['MACD'].iloc[i],
-                'signal_exit': df['Signal'].iloc[i],
-                'rsi_exit': df['RSI'].iloc[i],
-                'volume_exit': df['Volume'].iloc[i],
-            })
+        # Sell condition and transaction processing
+        if transaction_data:
+            current_price = df['Close'].iloc[i]
+            last_transaction = transaction_data[-1]
+            if current_price >= last_transaction['take_profit_price'] or current_price <= last_transaction['stop_loss_price']:
+                sell_signals[i] = current_price
+                exit_data = transaction_data.pop()
+                exit_data['time_exit'] = df.index[i].strftime('%Y-%m-%d %H:%M:%S')
+                exit_data['price_exit'] = current_price
+                exit_data['profit_loss'] = current_price - exit_data['price_entry']
+                exit_data['macd_exit'] = df['MACD'].iloc[i]
+                exit_data['signal_exit'] = df['Signal'].iloc[i]
+                exit_data['rsi_exit'] = df['RSI'].iloc[i]
+                exit_data['volume_exit'] = df['Volume'].iloc[i]  # Set Volume at exit
+                is_profitable = exit_data['profit_loss'] > 0
 
-            # Insert transaction details into the transactions table
-            cursor.execute('''INSERT INTO transactions (time_entry, time_exit, price_entry, price_exit, profit_loss, macd_entry, macd_exit, signal_entry, signal_exit, rsi_entry, rsi_exit, volume_entry, volume_exit) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
-                exit_data['time_entry'], exit_data['time_exit'], exit_data['price_entry'], exit_data['price_exit'], 
-                exit_data['profit_loss'], exit_data['macd_entry'], exit_data['macd_exit'], exit_data['signal_entry'], 
-                exit_data['signal_exit'], exit_data['rsi_entry'], exit_data['rsi_exit'], exit_data['volume_entry'], exit_data['volume_exit']
-            ))
+                # ... inside your signal_generation function, just before the database operation
+                print(f"Preparing to insert transaction: Entry Volume - {exit_data['volume_entry']}, Exit Volume - {exit_data['volume_exit']}")
+                exit_data['volume_entry'] = int(exit_data['volume_entry'])
+                exit_data['volume_exit'] = int(exit_data['volume_exit'])
 
-            # Update the transaction_summary table
-            if is_profitable:
-                cursor.execute('''UPDATE transaction_summary SET 
-                                  profitable_count = profitable_count + 1, 
-                                  total_profit = total_profit + ?, 
-                                  net_result = total_profit - total_loss
-                                  WHERE id = 1''', (exit_data['profit_loss'],))
-            else:
-                cursor.execute('''UPDATE transaction_summary SET 
-                                  non_profitable_count = non_profitable_count + 1, 
-                                  total_loss = total_loss + ?, 
-                                  net_result = total_profit - total_loss
-                                  WHERE id = 1''', (-exit_data['profit_loss'],))
-            conn.commit()
+                # Insert transaction details into the transactions table
+                cursor.execute('''INSERT INTO transactions (
+                    time_entry, time_exit, price_entry, price_exit, profit_loss, macd_entry, macd_exit, signal_entry, signal_exit, rsi_entry, rsi_exit, volume_entry, volume_exit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                    exit_data['time_entry'], exit_data['time_exit'], exit_data['price_entry'], exit_data['price_exit'], 
+                    exit_data['profit_loss'], exit_data['macd_entry'], exit_data['macd_exit'], exit_data['signal_entry'], 
+                    exit_data['signal_exit'], exit_data['rsi_entry'], exit_data['rsi_exit'], exit_data['volume_entry'], exit_data['volume_exit']
+                ))
 
-    # Update DataFrame with signals
+                if is_profitable:
+                    cursor.execute('''UPDATE transaction_summary SET 
+                                      profitable_count = profitable_count + 1, 
+                                      total_profit = total_profit + ?, 
+                                      net_result = total_profit - total_loss
+                                      WHERE id = 1''', (exit_data['profit_loss'],))
+                else:
+                    cursor.execute('''UPDATE transaction_summary SET 
+                                      non_profitable_count = non_profitable_count + 1, 
+                                      total_loss = total_loss + ?, 
+                                      net_result = total_profit - total_loss
+                                      WHERE id = 1''', (-exit_data['profit_loss'],))
+                conn.commit()
+                # ... right after the commit() in your signal_generation function:
+                cursor.execute("SELECT id, volume_entry, volume_exit FROM transactions ORDER BY id DESC LIMIT 1;")
+                last_inserted_row = cursor.fetchone()
+                print(f"Last inserted row: {last_inserted_row}")
+
+
     df['Buy_Signal_Price'] = buy_signals
     df['Sell_Signal_Price'] = sell_signals
 
@@ -163,12 +178,45 @@ def trading_strategy(file_path):
     plt.legend(loc='upper left')
     plt.show()
     
+    def check_volumes(conn):
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, volume_entry, volume_exit FROM transactions LIMIT 10;")
+        rows = cursor.fetchall()
+        for row in rows:
+            print(row)
+
+# Call this function after your trading_strategy function to print the check
+    check_volumes(conn)
+
     conn.close()
+    
+
 
 # Example usage
 # Example usage
-file_path = r'C:\Program VC\scalping_strategy\test_version\APPLE_data.csv'
+file_path = r'C:\Program VC\scalping_strategy\APPLE_data5M.csv'
 trading_strategy(file_path)
+
+import csv
+
+def export_transactions_to_csv(conn, csv_file_path):
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM transactions;")
+    transactions = cursor.fetchall()
+
+    # Column headers as they appear in the SQLite database
+    headers = [description[0] for description in cursor.description]
+
+    with open(csv_file_path, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(headers)
+        writer.writerows(transactions)
+
+# Usage
+conn = sqlite3.connect('trading_data.db')
+export_csv_file_path = 'transactions_export.csv'
+export_transactions_to_csv(conn, export_csv_file_path)
+conn.close()
 
 
 

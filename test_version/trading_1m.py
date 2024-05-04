@@ -3,6 +3,47 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import datetime
 import sqlite3
+from ib_insync import IB, Stock, util
+
+def connect_to_ib():
+    ib = IB()
+    ib.connect('127.0.0.1', 7497, 123)
+    return ib
+
+def subscribe_realtime_data(ib, symbol):
+    contract = Stock(symbol, 'SMART', 'USD')
+    ib.reqMktData(contract, genericTickList = ' ', snapshot = False, regulatorySnapshot = False)
+    return contract
+
+
+
+def main():
+    conn =setup_database()
+    try:
+        ib = connect_to_ib()
+        contract = subscribe_realtime_data(ib, 'AAPL')
+        columns = ['date', 'price']
+        df = pd.DataFrame(columns= columns)
+    
+        def on_tick_update(reqID, tickType, value):
+            if tickType == 4:
+                current_time = pd.Timestamp.now()
+                new_data = {'date': current_time, 'price': value}
+                global df
+                df = df.append(new_data, ignore_index = True)
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace = True, drop = False)
+
+                if len(df) > 26:
+                    df_with_indicators = compute_indicators(df)
+                    signal_generation(df_with_indicators, conn)
+        ib.run()
+    finally:
+        conn.close()
+
+
+                
+                
 
 # Function to read data from a CSV file
 def read_data(file_path):
@@ -16,12 +57,12 @@ def read_data(file_path):
 
 def compute_indicators(df):
     # Calculations for MACD and RSI
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    exp1 = df['price'].ewm(span=12, adjust=False).mean()
+    exp2 = df['price'].ewm(span=26, adjust=False).mean()
     macd = exp1 - exp2
     signal = macd.ewm(span=9, adjust=False).mean()
     
-    delta = df['Close'].diff()
+    delta = df['price'].diff()
     gain = (delta.where(delta > 0, 0)).fillna(0)
     loss = (-delta.where(delta < 0, 0)).fillna(0)
     avg_gain = gain.rolling(window=14).mean()
@@ -34,6 +75,8 @@ def compute_indicators(df):
     df['RSI'] = rsi
     
     return df
+    
+   
 
 def signal_generation(df, conn):
     cursor = conn.cursor()
@@ -47,22 +90,22 @@ def signal_generation(df, conn):
     for i in range(1, len(df)):
         # Buy condition
         if df['MACD'].iloc[i] > df['Signal'].iloc[i] and df['MACD'].iloc[i-1] <= df['Signal'].iloc[i-1] and df['RSI'].iloc[i] > 40:
-            buy_signals[i] = df['Close'].iloc[i]
+            buy_signals[i] = df['price'].iloc[i] 
             entry = {
                 'time_entry': df.index[i].strftime('%Y-%m-%d %H:%M:%S'),
-                'price_entry': df['Close'].iloc[i],
+                'price_entry': df['price'].iloc[i],
                 'macd_entry': df['MACD'].iloc[i],
                 'signal_entry': df['Signal'].iloc[i],
                 'rsi_entry': df['RSI'].iloc[i],
                 'volume_entry': df['Volume'].iloc[i],
-                'take_profit_price': df['Close'].iloc[i] + take_profit_threshold,
-                'stop_loss_price': df['Close'].iloc[i] + stop_loss_threshold
+                'take_profit_price': df['price'].iloc[i] + take_profit_threshold,
+                'stop_loss_price': df['price'].iloc[i] + stop_loss_threshold
             }
             transaction_data.append(entry)
 
         # Sell condition and transaction processing
         if transaction_data:
-            current_price = df['Close'].iloc[i]
+            current_price = df['price'].iloc[i]
             last_transaction = transaction_data[-1]
             if current_price >= last_transaction['take_profit_price'] or current_price <= last_transaction['stop_loss_price']:
                 sell_signals[i] = current_price
@@ -106,7 +149,7 @@ def signal_generation(df, conn):
                 # ... right after the commit() in your signal_generation function:
                 cursor.execute("SELECT id, volume_entry, volume_exit FROM transactions ORDER BY id DESC LIMIT 1;")
                 last_inserted_row = cursor.fetchone()
-                print(f"Last inserted row: {last_inserted_row}")
+                #print(f"Last inserted row: {last_inserted_row}")
 
 
     df['Buy_Signal_Price'] = buy_signals
@@ -115,7 +158,8 @@ def signal_generation(df, conn):
 
 
 
-def setup_database(conn):
+def setup_database():
+    conn = sqlite3.connect('trading_data.db')
     cursor = conn.cursor()
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS transactions (
@@ -158,6 +202,7 @@ def setup_database(conn):
     VALUES (1, 0, 0, 0.0, 0.0, 0.0)
     ''')
     conn.commit()
+    return conn
 
 
 
@@ -196,6 +241,11 @@ def trading_strategy(file_path):
 # Example usage
 file_path = r'C:\Program VC\scalping_strategy\APPLE_data5M.csv'
 trading_strategy(file_path)
+
+
+
+if __name__ == "__main__":
+    main()
 
 import csv
 
